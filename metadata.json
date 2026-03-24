@@ -1,0 +1,5 @@
+{
+  "name": "ClearRoute AI",
+  "description": "Smart city emergency traffic management dashboard for real-time ambulance routing.",
+  "requestFramePermissions": ["geolocation"]
+}

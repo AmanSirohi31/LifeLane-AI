@@ -1,0 +1,89 @@
+{
+  "entities": {
+    "Ambulance": {
+      "title": "Ambulance",
+      "description": "Represents an ambulance vehicle and its status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "vehicleNumber": { "type": "string" },
+        "currentLocation": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "destination": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "status": { "type": "string", "enum": ["idle", "active"] },
+        "route": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lat": { "type": "number" },
+              "lng": { "type": "number" }
+            }
+          }
+        },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "vehicleNumber", "currentLocation", "status"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Represents an active user on the map.",
+      "type": "object",
+      "properties": {
+        "socketId": { "type": "string" },
+        "currentLocation": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "lastSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["socketId", "currentLocation"]
+    },
+    "TrafficSignal": {
+      "title": "TrafficSignal",
+      "description": "Represents a virtual traffic signal.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "status": { "type": "string", "enum": ["RED", "GREEN"] },
+        "lastChanged": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "location", "status"]
+    }
+  },
+  "firestore": {
+    "ambulances": {
+      "schema": "Ambulance",
+      "description": "Collection of ambulances."
+    },
+    "users": {
+      "schema": "User",
+      "description": "Collection of active users."
+    },
+    "trafficSignals": {
+      "schema": "TrafficSignal",
+      "description": "Collection of traffic signals."
+    }
+  }
+}

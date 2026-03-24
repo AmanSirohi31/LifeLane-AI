@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: ambulances
+    // Document ID: ambulanceId
+    // Fields:
+    //   - id: string (required)
+    //   - vehicleNumber: string (required)
+    //   - currentLocation: map { lat: number, lng: number } (required)
+    //   - destination: map { lat: number, lng: number } (optional)
+    //   - status: string (required, enum: ['idle', 'active'])
+    //   - route: list of maps { lat: number, lng: number } (optional)
+    //   - lastUpdated: string (required, date-time)
+    //
+    // Collection: trafficSignals
+    // Document ID: signalId
+    // Fields:
+    //   - id: string (required)
+    //   - location: map { lat: number, lng: number } (required)
+    //   - status: string (required, enum: ['RED', 'GREEN'])
+    //   - lastChanged: string (required, date-time)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isValidLocation(loc) {
+      return loc is map && loc.lat is number && loc.lng is number;
+    }
+
+    function isValidAmbulance(data) {
+      return data.id is string &&
+             data.vehicleNumber is string &&
+             isValidLocation(data.currentLocation) &&
+             data.status in ['idle', 'active'] &&
+             data.lastUpdated is string;
+    }
+
+    function isValidSignal(data) {
+      return data.id is string &&
+             isValidLocation(data.location) &&
+             data.status in ['RED', 'GREEN'] &&
+             data.lastChanged is string;
+    }
+
+    // Rules
+    match /ambulances/{ambulanceId} {
+      allow read: if true; // Publicly readable for tracking
+      allow write: if isAuthenticated(); // Only authenticated users (e.g. ambulance drivers) can update
+    }
+
+    match /trafficSignals/{signalId} {
+      allow read: if true; // Publicly readable
+      allow write: if isAuthenticated(); // Only authenticated users (e.g. backend/admin) can update
+    }
+
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
