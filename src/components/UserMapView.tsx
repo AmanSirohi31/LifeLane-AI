@@ -8,7 +8,8 @@ import {
   CheckCircle2,
   ArrowLeftRight,
   RotateCcw,
-  TrafficCone
+  TrafficCone,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MapContainer, GoogleMapWrapper } from './map';
@@ -21,9 +22,9 @@ interface UserMapViewProps {
 
 export default function UserMapView({ initialCoords }: UserMapViewProps) {
   const navigate = useNavigate();
+  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
   const { isLoaded, loadError } = useMapLoader();
-  const [ambulancePos, setAmbulancePos] = useState({ x: 50, y: 90 });
-  const userPos = { x: 50, y: 50 }; // Constant for simulation logic
+  const [ambulanceLocation, setAmbulanceLocation] = useState<{ lat: number; lng: number; heading?: number } | null>(null);
   const [activeAlert, setActiveAlert] = useState<{ message: string; type: 'urgent' | 'warning' | 'safe'; icon: React.ReactNode } | null>(null);
   const [isAlertsEnabled, setIsAlertsEnabled] = useState(true);
   const [coords, setCoords] = useState<{ lat: number; lng: number }>(initialCoords);
@@ -34,29 +35,42 @@ export default function UserMapView({ initialCoords }: UserMapViewProps) {
   useEffect(() => {
     const socket = socketService.connect();
 
-    socket.on('ambulanceNearby', (data: { ambulanceId: string; distance: number; location: { lat: number; lng: number } }) => {
+    socket.on('ambulanceNearby', (data: { ambulanceId: string; distance: number; location: { lat: number; lng: number }; heading?: number }) => {
       if (!isAlertsEnabled) return;
 
-      const { distance } = data;
+      const { distance, location, heading } = data;
+      setAmbulanceLocation({ ...location, heading });
+      
+      // Only set alert if it's different or new
+      let newAlert: typeof activeAlert = null;
       if (distance < 50) {
-        setActiveAlert({ 
+        newAlert = { 
           message: "🚑 Ambulance passing now. Stay clear!", 
           type: 'urgent', 
           icon: <Siren className="w-6 h-6 text-white animate-pulse" /> 
-        });
+        };
       } else if (distance < 200) {
-        setActiveAlert({ 
+        newAlert = { 
           message: "🚑 Ambulance approaching from behind", 
           type: 'urgent', 
           icon: <AlertTriangle className="w-6 h-6 text-white" /> 
-        });
-      } else if (distance < 500) {
-        setActiveAlert({ 
+        };
+      } else if (distance <= 500) {
+        newAlert = { 
           message: "➡️ Move left to clear path", 
           type: 'warning', 
           icon: <ArrowLeftRight className="w-6 h-6 text-amber-600" /> 
-        });
+        };
       }
+
+      if (newAlert && (!activeAlert || activeAlert.message !== newAlert.message)) {
+        setActiveAlert(newAlert);
+      }
+    });
+
+    socket.on('ambulanceGone', () => {
+      setAmbulanceLocation(null);
+      setActiveAlert(null);
     });
 
     socket.on('signalUpdate', (data: { id: string; status: string }) => {
@@ -72,6 +86,7 @@ export default function UserMapView({ initialCoords }: UserMapViewProps) {
 
     return () => {
       socketService.off('ambulanceNearby');
+      socketService.off('ambulanceGone');
       socketService.off('signalUpdate');
     };
   }, [isAlertsEnabled]);
@@ -87,19 +102,6 @@ export default function UserMapView({ initialCoords }: UserMapViewProps) {
     setCoords(initialCoords);
     setMapCenter(initialCoords);
   }, [initialCoords]);
-
-  useEffect(() => {
-    // Simulate ambulance movement towards user
-    const interval = setInterval(() => {
-      setAmbulancePos(prev => {
-        const nextY = prev.y - 0.25;
-        if (nextY < -10) return { x: 50, y: 110 }; // Reset
-        return { ...prev, y: nextY };
-      });
-    }, 50);
-
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     // Update alerts based on ambulance distance
@@ -152,6 +154,62 @@ export default function UserMapView({ initialCoords }: UserMapViewProps) {
     );
   }
 
+  if (!googleMapsApiKey) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6 text-center">
+        <div className="bg-amber-50 p-6 rounded-[2.5rem] mb-6">
+          <Settings className="w-16 h-16 text-amber-500 animate-spin-slow" />
+        </div>
+        <h2 className="text-2xl font-black text-slate-800 mb-2">API Key Required</h2>
+        <p className="text-slate-500 mb-8 max-w-xs">To view the map and receive alerts, you need to provide a Google Maps API Key.</p>
+        
+        <div className="space-y-4 text-left mb-8 max-w-sm w-full">
+          <div className="flex gap-3">
+            <div className="bg-blue-100 text-blue-600 w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">1</div>
+            <p className="text-sm text-slate-600">Go to <a href="https://console.cloud.google.com/google/maps-apis/credentials" target="_blank" className="text-blue-600 hover:underline font-bold">Google Cloud Console</a></p>
+          </div>
+          <div className="flex gap-3">
+            <div className="bg-blue-100 text-blue-600 w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">2</div>
+            <p className="text-sm text-slate-600">Enable <b>Maps JavaScript</b>, <b>Places</b>, and <b>Directions</b> APIs.</p>
+          </div>
+          <div className="flex gap-3">
+            <div className="bg-blue-100 text-blue-600 w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">3</div>
+            <p className="text-sm text-slate-600">Add <code>VITE_GOOGLE_MAPS_API_KEY</code> to your <b>Settings</b> in AI Studio.</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 w-full max-w-xs">
+          <button 
+            onClick={() => window.location.reload()}
+            className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold shadow-xl shadow-blue-200 active:scale-95 transition-transform"
+          >
+            I've added the key, reload
+          </button>
+          <button 
+            onClick={() => navigate('/')}
+            className="w-full bg-slate-100 text-slate-600 py-4 rounded-2xl font-bold active:scale-95 transition-transform"
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoaded && !loadError) {
+    console.log('>>> UserMapView: Map is still loading...', { isLoaded, loadError });
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-6">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full mb-6"
+        />
+        <p className="text-slate-600 font-bold text-lg animate-pulse">Initializing Map...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen bg-white flex flex-col overflow-hidden">
       {/* Navbar */}
@@ -184,7 +242,7 @@ export default function UserMapView({ initialCoords }: UserMapViewProps) {
       <div className="relative flex-1 bg-[#F3F4F6] overflow-hidden flex flex-col min-h-0">
         <MapContainer className="flex-1">
           {isLoaded && mapCenter ? (
-            <GoogleMapWrapper center={mapCenter} />
+            <GoogleMapWrapper center={mapCenter} ambulanceLocation={ambulanceLocation} />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-slate-100">
               {loadError ? (

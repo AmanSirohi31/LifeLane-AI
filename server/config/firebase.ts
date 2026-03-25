@@ -1,4 +1,5 @@
-import admin from 'firebase-admin';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 import fs from 'fs';
 import path from 'path';
 
@@ -14,14 +15,30 @@ try {
 }
 
 // Initialize Firebase Admin SDK
-// In this environment, we can often initialize with just the project ID
-// or it might already be initialized by the platform.
-if (!admin.apps.length) {
-  admin.initializeApp({
-    projectId: firebaseConfig.projectId,
-  });
+let app;
+try {
+  if (!getApps().length) {
+    if (firebaseConfig.projectId) {
+      app = initializeApp({
+        projectId: firebaseConfig.projectId,
+      });
+      console.log(`Firebase Admin SDK initialized for project: ${firebaseConfig.projectId}`);
+    } else {
+      console.warn('Firebase Project ID is missing. Firebase features will not be available.');
+    }
+  } else {
+    app = getApps()[0];
+  }
+} catch (error) {
+  console.error('Error initializing Firebase Admin SDK:', error);
 }
 
-export const db = admin.firestore(firebaseConfig.firestoreDatabaseId);
+export const db = firebaseConfig.projectId ? getFirestore(firebaseConfig.firestoreDatabaseId || '(default)') : null as any;
 
-console.log(`Firebase Admin SDK initialized for project: ${firebaseConfig.projectId} and database: ${firebaseConfig.firestoreDatabaseId}`);
+if (firebaseConfig.projectId) {
+  if (firebaseConfig.firestoreDatabaseId) {
+    console.log(`Using Firestore database: ${firebaseConfig.firestoreDatabaseId}`);
+  } else {
+    console.warn('Firestore Database ID is missing, using (default)');
+  }
+}

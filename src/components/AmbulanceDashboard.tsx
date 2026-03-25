@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { socketService } from '../services/socketService';
+import { useAmbulanceMovement } from '../hooks/useAmbulanceMovement';
 import { 
   GoogleMap, 
   useJsApiLoader, 
@@ -72,13 +73,60 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
   const [autocomplete, setAutocomplete] = useState<google.maps.places.Autocomplete | null>(null);
   const [currentLocation, setCurrentLocation] = useState<google.maps.LatLngLiteral>(defaultCenter);
   const [isEmergencyActive, setIsEmergencyActive] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [isFollowing, setIsFollowing] = useState(true);
   const [routePath, setRoutePath] = useState<google.maps.LatLngLiteral[]>([]);
   const [error, setError] = useState<string | null>(null);
   
   const [alerts, setAlerts] = useState<Alert[]>([
     { id: '1', message: 'System initialized and ready.', type: 'info', time: '09:00 AM' },
   ]);
+  
+  const polylineRef = React.useRef<google.maps.Polyline | null>(null);
+
+  const addAlert = (message: string, type: Alert['type']) => {
+    const newAlert: Alert = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      message,
+      type,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setAlerts(prev => [newAlert, ...prev].slice(0, 5));
+  };
+
+  const { currentLocation: movingLocation, heading, remainingDistance, eta, currentSegmentIndex } = useAmbulanceMovement({
+    routePath,
+    isEmergencyActive,
+    speedKmh: 60,
+    onDestinationReached: async () => {
+      setIsEmergencyActive(false);
+      try {
+        await fetch('/api/ambulance/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: ambulanceId })
+        });
+        addAlert('✅ Emergency destination reached.', 'success');
+      } catch (error) {
+        console.error("Failed to stop emergency on destination reached:", error);
+        addAlert('✅ Destination reached.', 'success');
+      }
+    },
+    onLocationUpdate: (location, currentHeading) => {
+      setCurrentLocation(location);
+      
+      // Emit location update
+      socketService.emit('ambulanceLocationUpdate', {
+        id: ambulanceId,
+        location,
+        heading: currentHeading
+      });
+
+      // Randomly simulate vehicle alerts during movement
+      if (Math.random() > 0.995) { // Adjusted probability for requestAnimationFrame
+        addAlert('🚗 Nearby vehicle alerted and yielding', 'info');
+      }
+    }
+  });
 
   useEffect(() => {
     socketService.connect();
@@ -99,58 +147,19 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
     };
   }, []);
 
-  // Simulation of movement
-  useEffect(() => {
-    if (!isEmergencyActive || routePath.length === 0) return;
-
-    const interval = setInterval(() => {
-      setProgress((prev) => {
-        const next = prev + 1;
-        if (next >= routePath.length) {
-          setIsEmergencyActive(false);
-          addAlert('✅ Emergency destination reached.', 'success');
-          return prev;
-        }
-        
-        // Randomly simulate vehicle alerts during movement
-        if (Math.random() > 0.95) {
-          addAlert('🚗 Nearby vehicle alerted and yielding', 'info');
-        }
-
-        return next;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isEmergencyActive, routePath]);
+  const activeLocation = movingLocation || currentLocation;
 
   useEffect(() => {
-    if (isEmergencyActive && routePath[progress]) {
-      const newPos = routePath[progress];
-      setCurrentLocation(newPos);
-      
-      // Emit location update
-      socketService.emit('ambulanceLocationUpdate', {
-        id: ambulanceId,
-        location: newPos
-      });
-
-      // Recenter map if active
-      if (map) {
-        map.panTo(newPos);
-      }
+    if (polylineRef.current && routePath.length > 0) {
+      polylineRef.current.setPath([activeLocation, ...routePath.slice(currentSegmentIndex + 1)]);
     }
-  }, [progress, isEmergencyActive, routePath, ambulanceId, map]);
+  }, [activeLocation, currentSegmentIndex, routePath]);
 
-  const addAlert = (message: string, type: Alert['type']) => {
-    const newAlert: Alert = {
-      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      message,
-      type,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-    setAlerts(prev => [newAlert, ...prev].slice(0, 10));
-  };
+  useEffect(() => {
+    if (isFollowing && map && activeLocation) {
+      map.panTo(activeLocation);
+    }
+  }, [activeLocation, isFollowing, map]);
 
   const calculateRoute = async () => {
     if (!destination || !isLoaded) return;
@@ -168,13 +177,13 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
           setDistance(results.routes[0].legs[0].distance?.text || '');
           setDuration(results.routes[0].legs[0].duration?.text || '');
           
-          // Extract path for simulation
-          const path = results.routes[0].overview_path.map(p => ({
-            lat: p.lat(),
-            lng: p.lng()
-          }));
+          // Extract detailed path for simulation
+          const path = results.routes[0].legs.flatMap(leg => 
+            leg.steps.flatMap(step => 
+              step.path.map(p => ({ lat: p.lat(), lng: p.lng() }))
+            )
+          );
           setRoutePath(path);
-          setProgress(0);
           setError(null);
           
           addAlert(`📍 Route calculated to ${destination}`, 'info');
@@ -208,6 +217,31 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
         setDestination(place.formatted_address);
       }
     }
+  };
+
+  const handleClearSearch = async () => {
+    if (isEmergencyActive) {
+      try {
+        await fetch('/api/ambulance/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: ambulanceId })
+        });
+        addAlert('✅ Emergency stopped and route cleared.', 'info');
+      } catch (error) {
+        console.error("Failed to stop emergency on clear:", error);
+      }
+    }
+    
+    setDestination('');
+    setDirectionsResponse(null);
+    setRoutePath([]);
+    setIsEmergencyActive(false);
+    setDistance('');
+    setDuration('');
+    setError(null);
+    // Optional: Reset to base if desired, but keeping current location for realism
+    // setCurrentLocation(defaultCenter);
   };
 
   const toggleEmergency = async () => {
@@ -249,17 +283,6 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
     onLogout();
   };
 
-  if (!isLoaded && !loadError) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-slate-50">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          <p className="text-slate-500 font-bold animate-pulse">Loading Mission Control...</p>
-        </div>
-      </div>
-    );
-  }
-
   if (!googleMapsApiKey) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-slate-50 p-6">
@@ -293,6 +316,18 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
           >
             I've added the key, reload
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoaded && !loadError) {
+    console.log('>>> AmbulanceDashboard: Map is still loading...', { isLoaded, loadError, googleMapsApiKey: !!googleMapsApiKey });
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-500 font-bold animate-pulse">Loading Mission Control...</p>
         </div>
       </div>
     );
@@ -407,7 +442,7 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
               <button 
                 onClick={toggleEmergency}
                 disabled={!directionsResponse && !isEmergencyActive}
-                className={`w-full py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all duration-300 shadow-lg active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+                className={`w-full py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all duration-300 shadow-lg active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
                   isEmergencyActive ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'
                 }`}
               >
@@ -469,7 +504,6 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
         {/* Map Area */}
         <div className="lg:col-span-9 relative rounded-3xl overflow-hidden shadow-2xl border border-gray-200 bg-slate-100">
           <GoogleMap
-            center={currentLocation}
             zoom={15}
             mapContainerStyle={{ width: '100%', height: '100%' }}
             options={{
@@ -485,28 +519,41 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
                 }
               ]
             }}
-            onLoad={map => setMap(map)}
+            onLoad={map => {
+              setMap(map);
+              map.panTo(activeLocation);
+            }}
+            onDragStart={() => setIsFollowing(false)}
           >
-            {directionsResponse && (
-              <DirectionsRenderer 
-                directions={directionsResponse}
+            {routePath.length > 0 && (
+              <Polyline
+                onLoad={(polyline) => {
+                  polylineRef.current = polyline;
+                  polyline.setPath([activeLocation, ...routePath.slice(currentSegmentIndex + 1)]);
+                }}
+                onUnmount={() => {
+                  polylineRef.current = null;
+                }}
+                path={[activeLocation, ...routePath.slice(currentSegmentIndex + 1)]}
                 options={{
-                  polylineOptions: {
-                    strokeColor: '#3B82F6',
-                    strokeWeight: 6,
-                    strokeOpacity: 0.8
-                  },
-                  suppressMarkers: true
+                  strokeColor: '#3B82F6',
+                  strokeWeight: 6,
+                  strokeOpacity: 0.8
                 }}
               />
             )}
+            {console.log("currentSegmentIndex:", currentSegmentIndex, "routePath length:", routePath.length)}
             
             <Marker 
-              position={currentLocation} 
+              position={activeLocation} 
               icon={{
-                url: "https://cdn-icons-png.flaticon.com/512/1048/1048313.png", // Ambulance icon
-                scaledSize: new google.maps.Size(40, 40),
-                anchor: new google.maps.Point(20, 20)
+                path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                scale: 6,
+                fillColor: "#ef4444",
+                fillOpacity: 1,
+                strokeWeight: 2,
+                strokeColor: "#ffffff",
+                rotation: heading,
               }}
             />
 
@@ -523,20 +570,21 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
           </GoogleMap>
 
           {/* Search Overlay */}
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 w-full max-w-md px-4 z-10">
-            <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 p-2 flex items-center gap-2">
-              <div className="p-2 text-blue-600">
+          <div className="absolute top-6 right-6 w-full max-w-sm z-10">
+            <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 relative flex items-center w-full">
+              <div className="absolute left-4 text-blue-600 pointer-events-none z-10">
                 <Search className="w-5 h-5" />
               </div>
+              
               <Autocomplete
                 onLoad={setAutocomplete}
                 onPlaceChanged={onPlaceChanged}
-                className="flex-1"
+                className="w-full"
               >
                 <input
                   type="text"
                   placeholder="Enter destination hospital or location"
-                  className="w-full py-2 outline-none text-sm font-medium text-slate-700"
+                  className="w-full py-4 pl-12 pr-28 outline-none text-sm font-medium text-slate-700 bg-transparent rounded-2xl"
                   value={destination}
                   onChange={(e) => {
                     setDestination(e.target.value);
@@ -545,9 +593,20 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
                   onKeyDown={(e) => e.key === 'Enter' && calculateRoute()}
                 />
               </Autocomplete>
+
+              {destination && (
+                <button
+                  onClick={handleClearSearch}
+                  className="absolute right-[84px] p-1.5 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors z-10 cursor-pointer"
+                  title="Clear search"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+
               <button 
                 onClick={calculateRoute}
-                className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors"
+                className="absolute right-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors z-10 cursor-pointer"
               >
                 Route
               </button>
@@ -561,7 +620,7 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
               >
                 <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
                 <p className="text-[11px] font-bold text-red-700 leading-tight">{error}</p>
-                <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600">
+                <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600 cursor-pointer">
                   <X className="w-4 h-4" />
                 </button>
               </motion.div>
@@ -572,32 +631,44 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
           <AnimatePresence>
             {directionsResponse && (
               <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 20 }}
-                className="absolute bottom-8 left-8 z-10 bg-white/90 backdrop-blur-md p-6 rounded-2xl shadow-2xl border border-white/20 w-80 h-[210px] flex flex-col justify-between"
+                initial={{ opacity: 0, y: -20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -20, scale: 0.95 }}
+                className="absolute top-6 left-6 z-10 bg-white/80 backdrop-blur-xl p-4 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white/50 w-72 flex flex-col gap-3"
               >
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Route Info</h3>
-                  <div className="bg-blue-100 text-blue-600 p-1.5 rounded-lg">
-                    <Navigation2 className="w-4 h-4" />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="bg-blue-50 text-blue-600 p-1.5 rounded-lg shadow-sm">
+                      <Navigation2 className="w-4 h-4" />
+                    </div>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Route Info</h3>
                   </div>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3 bg-slate-50/50 p-3 rounded-xl border border-slate-100/50">
                   <div>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Distance</p>
-                    <p className="text-lg font-bold text-slate-800">{distance}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">Distance</p>
+                    <p className="text-xl font-black text-slate-800 tracking-tight">
+                      {isEmergencyActive && remainingDistance > 0 
+                        ? (remainingDistance > 1000 ? `${(Math.round(remainingDistance / 50) * 50 / 1000).toFixed(2)} km` : `${Math.round(remainingDistance / 50) * 50} m`)
+                        : distance}
+                    </p>
                   </div>
                   <div>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">ETA</p>
-                    <p className="text-lg font-bold text-blue-600">{duration}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">ETA</p>
+                    <p className="text-xl font-black text-blue-600 tracking-tight">
+                      {isEmergencyActive && eta > 0
+                        ? (eta > 60 ? `${Math.round(eta / 60)} min` : `< 1 min`)
+                        : duration}
+                    </p>
                   </div>
                 </div>
 
-                <div className="mt-4 pt-4 border-t border-slate-100">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Destination</p>
-                  <p className="text-xs font-bold text-slate-600 truncate">{destination}</p>
+                <div className="flex items-center gap-2 px-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  <p className="text-xs font-medium text-slate-600 truncate flex-1" title={destination}>
+                    {destination}
+                  </p>
                 </div>
               </motion.div>
             )}
@@ -606,15 +677,18 @@ export default function AmbulanceDashboard({ onLogout, onNavigateHome, ambulance
           {/* Map Controls */}
           <div className="absolute bottom-8 right-8 z-10 flex flex-col gap-2">
             <button 
-              onClick={() => map?.panTo(currentLocation)}
-              className="bg-white p-3 rounded-xl shadow-lg border border-gray-100 text-slate-600 hover:text-blue-600 transition-colors"
+              onClick={() => {
+                setIsFollowing(true);
+                map?.panTo(activeLocation);
+              }}
+              className={`bg-white p-3 rounded-xl shadow-lg border border-gray-100 transition-colors cursor-pointer ${isFollowing ? 'text-blue-600' : 'text-slate-600 hover:text-blue-600'}`}
               title="Recenter"
             >
               <MapPin className="w-5 h-5" />
             </button>
             <button 
               onClick={() => map?.setZoom((map.getZoom() || 15) + 1)}
-              className="bg-white p-3 rounded-xl shadow-lg border border-gray-100 text-slate-600 hover:text-blue-600 transition-colors"
+              className="bg-white p-3 rounded-xl shadow-lg border border-gray-100 text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
             >
               <Maximize2 className="w-5 h-5" />
             </button>

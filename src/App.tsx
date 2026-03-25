@@ -11,6 +11,7 @@ import AmbulanceDashboard from './components/AmbulanceDashboard';
 import UserMapView from './components/UserMapView';
 
 function AppRoutes() {
+  console.log('>>> AppRoutes: Rendering...');
   const navigate = useNavigate();
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [ambulanceId, setAmbulanceId] = useState<string | null>(null);
@@ -19,13 +20,18 @@ function AppRoutes() {
   const [deniedCount, setDeniedCount] = useState(0);
 
   useEffect(() => {
-    const token = localStorage.getItem('clearroute_token');
-    const storedId = localStorage.getItem('clearroute_ambulance_id');
-    setIsAuthenticated(!!token);
-    setAmbulanceId(storedId);
-
-    // We no longer perform an initial check on refresh to avoid any automatic prompts.
-    // The state starts as 'idle' and will be updated when the user interacts.
+    try {
+      console.log('>>> AppRoutes: Initializing auth state...');
+      const token = localStorage.getItem('clearroute_token');
+      const storedId = localStorage.getItem('clearroute_ambulance_id');
+      console.log('>>> AppRoutes: Token found:', !!token, 'ID found:', !!storedId);
+      setIsAuthenticated(!!token);
+      setAmbulanceId(storedId);
+      console.log('>>> AppRoutes: Auth state set to:', !!token);
+    } catch (error) {
+      console.error('>>> AppRoutes: Error accessing localStorage:', error);
+      setIsAuthenticated(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -128,6 +134,7 @@ function AppRoutes() {
 }
 
 export default function App() {
+  console.log('>>> App: Mounting...');
   return (
     <Router>
       <AppRoutes />

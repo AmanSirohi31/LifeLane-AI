@@ -1,4 +1,5 @@
 import express from 'express';
+console.log('>>> server/server.ts is starting...');
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
@@ -24,6 +25,11 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
+  // Health check
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok', time: new Date().toISOString() });
+  });
+
   // API Routes
   app.use('/api', authRoutes);
   app.use('/api/ambulance', ambulanceRoutes);
@@ -34,11 +40,21 @@ async function startServer() {
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    console.log('>>> Initializing Vite middleware with config...');
+    try {
+      const vite = await createViteServer({
+        server: { 
+          middlewareMode: true,
+          host: '0.0.0.0',
+          port: 3000
+        },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+      console.log('>>> Vite middleware initialized successfully.');
+    } catch (error) {
+      console.error('>>> CRITICAL: Failed to initialize Vite middleware:', error);
+    }
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -48,7 +64,9 @@ async function startServer() {
   }
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`>>> Server is successfully listening on http://0.0.0.0:${PORT}`);
+    console.log('>>> Health check available at /health');
+    console.log('>>> API routes registered: /api, /api/ambulance, /api/signals');
   });
 }
 
